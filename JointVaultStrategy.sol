@@ -170,7 +170,11 @@ contract JointVaultStrategy is Ownable {
     function getUnderlyingTokenOfMarginEngine() public returns(address me){
         return address(IMarginEngine(marginEngine).underlyingToken());
     }
-     function provideLiquidityApproval(uint amount) public {
+    uint256 public endTimestamp;
+    function getEndTimestamp() public {
+        endTimestamp = IMarginEngine(marginEngine).termEndTimestampWad();
+    }
+    function provideLiquidityApproval(uint amount) public {
         IERC20(underlyingToken).approve(marginEngine, amount);
         IERC20(underlyingToken).approve(periphery, amount);
      }
