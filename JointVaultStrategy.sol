@@ -9,6 +9,8 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "./interfaces/IPeriphery.sol";
 import "./interfaces/IMarginEngine.sol";
+import "./interfaces/fcms/IFCM.sol";
+import "./core_libraries/Time.sol";
 
 
 contract JointVaultStrategy is Ownable {
@@ -83,25 +85,25 @@ contract JointVaultStrategy is Ownable {
     address marginEngine;
     address factory;
     address periphery;
-    uint256 cRate;
+    uint256 public cRate;
     bytes public maturity;
     constructor(
         //CollectionWindow memory _collectionWindow
     ) {
         // Token contracts
-        variableRateToken = IERC20(0xe12AFeC5aa12Cf614678f9bFeeB98cA9Bb95b5B0);
+        variableRateToken = IERC20(0x39914AdBe5fDbC2b9ADeedE8Bcd444b20B039204);
         underlyingToken = IERC20(0x016750AC630F711882812f24Dba6c95b9D35856d);
 
         // Deploy JVUSDC token
         JVUSDC = new JointVaultUSDC("Joint Vault USDC", "jvUSDC"); 
 
         // Voltz contracts
-        factory = 0x4cd7e3fF2bF87E848d2f2F178f613e1391e189B1;
-        periphery = 0x8614B5fa62BBB45be5B320E1B6727E5828B5b513;
+        factory = 0x07091fF74E2682514d860Ff9F4315b90525952b0;
+        periphery = 0xcf0144e092f2B80B11aD72CF87C71d1090F97746;
 
         //periphery = IPeriphery(factory.periphery());
-        fcm = 0x96a9595e79dB2B74b72dB7cf6d35028720C4Abe1;
-        marginEngine = 0x173F0a3Ff16a036AcB7135b69AF717993F932F67;
+        fcm = 0xEF3195f842d97181b7E72E833D2eE0214dB77365;
+        marginEngine = 0x13E30f8B91b5d0d9e075794a987827C21b06d4C1;
 
         // Aave contracts
         AAVE = IAAVE(0xE0fBa4Fc209b4948668006B2bE61711b7f465bAe);
@@ -145,7 +147,7 @@ contract JointVaultStrategy is Ownable {
 
         return (
             // twelve decimals for aUSDC / jVUSDC decimal different + 18 from ctoken decimals
-            variableRateToken.balanceOf(address(this)) * 10 ** 30
+            variableRateToken.balanceOf(address(this)) * 10 ** 18
             / JVUSDC.totalSupply()
         );
     }
@@ -158,53 +160,50 @@ contract JointVaultStrategy is Ownable {
     //
     // Strategy functions
     //
-    //struct MintOrBurnParams {
-    //    address marginEngine;
-   //     int24 tickLower;
-    //    int24 tickUpper;
-        uint256 notional;
-    //    bool isMint;
-    //    uint256 marginDelta;
-    //}
 
     function getUnderlyingTokenOfMarginEngine() public returns(address me){
         return address(IMarginEngine(marginEngine).underlyingToken());
     }
-    uint256 public endTimestamp;
-    function getEndTimestamp() public {
-        endTimestamp = IMarginEngine(marginEngine).termEndTimestampWad();
+    uint public endTimestamp;
+    function getEndTimestampWad() public returns(uint endTimestampWad) {
+        endTimestamp = IMarginEngine(marginEngine).termEndTimestampWad()/1e18;
+        return IMarginEngine(marginEngine).termEndTimestampWad();
     }
-    function provideLiquidityApproval(uint amount) public {
-        IERC20(underlyingToken).approve(marginEngine, amount);
-        IERC20(underlyingToken).approve(periphery, amount);
-     }
 
-    function provideLiquidity(uint amount, uint amount2) public returns (bool success){
+    function windowIsClosed() public returns(bool closed) {
+        emit test2(Time.isCloseToMaturityOrBeyondMaturity(getEndTimestampWad()));
+        return Time.isCloseToMaturityOrBeyondMaturity(getEndTimestampWad());
+    }
 
+    function provideLiquidity(uint amount) public returns (bool success){
+        require(underlyingToken.allowance(msg.sender, address(this)) >= amount, "Approve contract first;");
+        underlyingToken.transferFrom(msg.sender, address(this), amount);
+        IERC20(underlyingToken).approve(periphery, 10e27);
         IPeriphery.MintOrBurnParams memory mobp;
         mobp = IPeriphery.MintOrBurnParams(IMarginEngine(marginEngine),
                                                     -60,
                                                     60,
                                                     amount,
                                                     true,
-                                                    amount2);
+                                                    amount);
         IPeriphery(periphery).mintOrBurn(mobp);
-        //bytes memory data = abi.encodeWithSignature("mintOrBurn((address,int24,int24,uint256,bool,uint256))", params);
-        //(bool success,) = periphery.call(data);
-        //return success;
-        //require(success,"deadbeaf");
     }
 
-    // @notice Interact with Voltz 
-    function execute() public  {
-        uint amount = variableRateToken.balanceOf(address(this));
-        IERC20(variableRateToken).approve(fcm, amount);
+    event test(uint aaaaaaaa);
+    event test2(bool abcccccccccc);
 
-        fcm.call{value: 0}(
-            abi.encodeWithSignature("initiateFullyCollateralisedFixedTakerSwap(uint256,uint160)",
-            variableRateToken.balanceOf(address(this)),
-             MAX_SQRT_RATIO - 1));
-        require(variableRateToken.balanceOf(address(this)) == 0, "No Success");
+    // @notice Interact with Voltz 
+    function execute(uint amount) public  {
+        IERC20(variableRateToken).approve(fcm, amount);
+        emit test(variableRateToken.balanceOf(address(this)));
+        (int a, int b,,) = IFCM(fcm).initiateFullyCollateralisedFixedTakerSwap(amount, MAX_SQRT_RATIO - 1);
+        //(bool success, ) = fcm.call{value: 0}(
+        //    abi.encodeWithSignature("initiateFullyCollateralisedFixedTakerSwap(uint256,uint160)",
+         //   amount,
+         //    MAX_SQRT_RATIO - 1));
+        emit test(variableRateToken.balanceOf(address(this)));
+        //emit test2(success);
+        //require(variableRateToken.balanceOf(address(this)) == 0, "No Success");
 
 
         (bool success2, bytes memory termEnd) = marginEngine.call{value:0}(abi.encodeWithSignature("termEndTimestampWad()"));
@@ -222,7 +221,8 @@ contract JointVaultStrategy is Ownable {
     // @notice Settle Strategie 
     function settle() public  {
         // Get AUSDC and USDC from Voltz position
-        fcm.call{value: 0}(abi.encodeWithSignature("settleTrader()"));
+        IFCM(fcm).settleTrader();
+        //fcm.call{value: 0}(abi.encodeWithSignature("settleTrader()"));
 
         // Convert USDC to AUSDC
         uint256 underlyingTokenBalance = underlyingToken.balanceOf(address(this));
@@ -250,23 +250,26 @@ contract JointVaultStrategy is Ownable {
     // @param  Amount of USDC to deposit to AAVE
     // TODO: remove hardcoded decimals
     function deposit(uint256 amount) public  {
+        require(underlyingToken.allowance(msg.sender, address(this)) >= amount, "Approve contract first;");
         underlyingToken.transferFrom(msg.sender, address(this), amount);
- 
+
         // Convert different denominations (6 <- 18)
-        uint mintAmount = amount * 1e12;
+        uint mintAmount = amount;  // * 1e12;
+        emit test(mintAmount);
 
         // Approve AAve to spend the underlying token
         underlyingToken.approve(address(AAVE), amount);
 
         // Calculate deposit rate
-        uint256 finalAmount = mintAmount / cRate * 1e18;
+        uint256 finalAmount = mintAmount * 1e18 / cRate;
+        emit test(finalAmount);
 
         // Deposit to Aave
-        uint aave_t0 = variableRateToken.balanceOf(address(this));
         AAVE.deposit(address(underlyingToken), amount, address(this), 0);
-        uint aave_t1 = variableRateToken.balanceOf(address(this));
-        require(aave_t1 - aave_t0 == amount, "Aave deposit failed;");
+        require(variableRateToken.balanceOf(address(this)) > 0, "Aave deposit failed;");
+        emit test(amount);
 
+        // Mint jvUSDC
         JVUSDC.adminMint(msg.sender, finalAmount);      
     }
 
@@ -275,7 +278,7 @@ contract JointVaultStrategy is Ownable {
     // TODO: remove hardcoded decimals
     function withdraw(uint256 amount) public  {
         // Convert different denominations (6 -> 18)
-        uint256 withdrawAmount = amount / 1e12;
+        uint256 withdrawAmount = amount; // / 1e12;
         uint256 finalAmount = cRate * withdrawAmount / 1e18;
 
         // Pull jvUSDC tokens from user
@@ -302,11 +305,18 @@ contract JointVaultStrategy is Ownable {
         return variableRateToken.balanceOf(address(this));      
     }
 
+    function now() public view returns (uint) {
+        return block.timestamp;
+    }
+
     // @notice Fallback that ignores calls from jvUSDC
     // @notice Calls from jvUSDC happen when user deposits
-    fallback() external {
-        if (msg.sender == address(JVUSDC)) {
-            revert("No known function targeted");
-        }
-    }
+    //fallback() external {
+        //if (underlyingToken.balanceOf(address(this)) > 0) {
+        //    AAVE.deposit(address(underlyingToken), underlyingToken.balanceOf(address(this)), address(this), 0);
+        //}
+        //if (msg.sender != address(JVUSDC)) {
+        //    revert("No known function targeted");
+        //} 
+    //}
 }
