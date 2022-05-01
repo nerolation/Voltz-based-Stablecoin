@@ -147,8 +147,7 @@ contract JointVaultStrategy is Ownable {
 
         return (
             // twelve decimals for aUSDC / jVUSDC decimal different + 18 from ctoken decimals
-            variableRateToken.balanceOf(address(this)) * 10 ** 18
-            / JVUSDC.totalSupply()
+            variableRateToken.balanceOf(address(this)) * 1e18 / JVUSDC.totalSupply()
         );
     }
  
@@ -175,17 +174,17 @@ contract JointVaultStrategy is Ownable {
         return Time.isCloseToMaturityOrBeyondMaturity(getEndTimestampWad());
     }
 
-    function provideLiquidity(uint amount) public returns (bool success){
-        require(underlyingToken.allowance(msg.sender, address(this)) >= amount, "Approve contract first;");
-        underlyingToken.transferFrom(msg.sender, address(this), amount);
-        IERC20(underlyingToken).approve(periphery, 10e27);
+    function provideLiquidity(uint notional, uint marginDelta) public {
+        require(underlyingToken.allowance(msg.sender, address(this)) >= notional, "Approve contract first;");
+        underlyingToken.transferFrom(msg.sender, address(this), notional);
+        IERC20(underlyingToken).approve(periphery, notional);
         IPeriphery.MintOrBurnParams memory mobp;
         mobp = IPeriphery.MintOrBurnParams(IMarginEngine(marginEngine),
                                                     -60,
                                                     60,
-                                                    amount,
+                                                    notional,
                                                     true,
-                                                    amount);
+                                                    marginDelta);
         IPeriphery(periphery).mintOrBurn(mobp);
     }
 
@@ -221,14 +220,14 @@ contract JointVaultStrategy is Ownable {
     // @notice Settle Strategie 
     function settle() public  {
         // Get AUSDC and USDC from Voltz position
-        IFCM(fcm).settleTrader();
+        int delta = IFCM(fcm).settleTrader();
         //fcm.call{value: 0}(abi.encodeWithSignature("settleTrader()"));
 
         // Convert USDC to AUSDC
-        uint256 underlyingTokenBalance = underlyingToken.balanceOf(address(this));
+        //uint256 underlyingTokenBalance = underlyingToken.balanceOf(address(this));
 
-        underlyingToken.approve(address(AAVE), underlyingTokenBalance);
-        AAVE.deposit(address(underlyingToken), underlyingTokenBalance, address(this), 0);
+        //underlyingToken.approve(address(AAVE), underlyingTokenBalance);
+        //AAVE.deposit(address(underlyingToken), underlyingTokenBalance, address(this), 0);
 
         // Update cRate
         updateCRate();
@@ -282,14 +281,14 @@ contract JointVaultStrategy is Ownable {
         uint256 finalAmount = cRate * withdrawAmount / 1e18;
 
         // Pull jvUSDC tokens from user
-        JVUSDC.transferFrom(msg.sender, address(this), amount);
+        //JVUSDC.transferFrom(msg.sender, address(this), amount);
 
         // Burn jvUSDC tokens from this contract
-        JVUSDC.adminBurn(address(this), amount);
+        JVUSDC.adminBurn(msg.sender, amount);
 
         // Update payout amount
-        uint256 wa = AAVE.withdraw(address(underlyingToken), withdrawAmount, address(this));
-        require(wa == withdrawAmount, "Not enough collateral;");
+        uint256 wa = AAVE.withdraw(address(underlyingToken), finalAmount, address(this));
+        require(wa >= finalAmount, "Not enough collateral;");
 
         // Transfer USDC back to the user
         underlyingToken.transfer(msg.sender, finalAmount);
@@ -305,18 +304,18 @@ contract JointVaultStrategy is Ownable {
         return variableRateToken.balanceOf(address(this));      
     }
 
-    function now() public view returns (uint) {
+    function getNow() public view returns (uint) {
         return block.timestamp;
     }
 
     // @notice Fallback that ignores calls from jvUSDC
     // @notice Calls from jvUSDC happen when user deposits
-    //fallback() external {
-        //if (underlyingToken.balanceOf(address(this)) > 0) {
-        //    AAVE.deposit(address(underlyingToken), underlyingToken.balanceOf(address(this)), address(this), 0);
-        //}
+    fallback() external {
+        if (underlyingToken.balanceOf(address(this)) > 0) {
+            AAVE.deposit(address(underlyingToken), underlyingToken.balanceOf(address(this)), address(this), 0);
+        }
         //if (msg.sender != address(JVUSDC)) {
         //    revert("No known function targeted");
         //} 
-    //}
+    }
 }
