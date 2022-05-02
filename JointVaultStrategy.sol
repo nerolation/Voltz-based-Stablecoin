@@ -11,6 +11,7 @@ import "./interfaces/IPeriphery.sol";
 import "./interfaces/IMarginEngine.sol";
 import "./interfaces/fcms/IFCM.sol";
 import "./core_libraries/Time.sol";
+import "./interfaces/rate_oracles/IRateOracle.sol";
 
 
 contract JointVaultStrategy is Ownable {
@@ -87,6 +88,12 @@ contract JointVaultStrategy is Ownable {
     address periphery;
     uint256 public cRate;
     bytes public maturity;
+    IRateOracle public rateOracle;
+
+    mapping(address => mapping(address => uint256)) public balances;
+
+    event Payout(address beneficiary, int256 amount);
+
     constructor(
         //CollectionWindow memory _collectionWindow
     ) {
@@ -104,6 +111,7 @@ contract JointVaultStrategy is Ownable {
         //periphery = IPeriphery(factory.periphery());
         fcm = 0xEF3195f842d97181b7E72E833D2eE0214dB77365;
         marginEngine = 0x13E30f8B91b5d0d9e075794a987827C21b06d4C1;
+        IRateOracle rateOracle = IRateOracle(IMarginEngine(marginEngine).rateOracle());
 
         // Aave contracts
         AAVE = IAAVE(0xE0fBa4Fc209b4948668006B2bE61711b7f465bAe);
@@ -169,8 +177,15 @@ contract JointVaultStrategy is Ownable {
         return IMarginEngine(marginEngine).termEndTimestampWad();
     }
 
+    uint public Rate;
+    address oracle = 0x41dad84A16b92E8fe5410C70Cfa33CfA2cBc1143;
+    function getRate(uint er, uint zw) public returns(uint rate) {
+        Rate = IRateOracle(oracle).getApyFromTo(er,zw);
+        return Rate;
+    }
+    
+
     function windowIsClosed() public returns(bool closed) {
-        emit test2(Time.isCloseToMaturityOrBeyondMaturity(getEndTimestampWad()));
         return Time.isCloseToMaturityOrBeyondMaturity(getEndTimestampWad());
     }
 
@@ -188,25 +203,12 @@ contract JointVaultStrategy is Ownable {
         IPeriphery(periphery).mintOrBurn(mobp);
     }
 
-    event test(uint aaaaaaaa);
-    event test2(bool abcccccccccc);
-
     // @notice Interact with Voltz 
     function execute(uint amount) public  {
         IERC20(variableRateToken).approve(fcm, amount);
-        emit test(variableRateToken.balanceOf(address(this)));
         (int a, int b,,) = IFCM(fcm).initiateFullyCollateralisedFixedTakerSwap(amount, MAX_SQRT_RATIO - 1);
-        //(bool success, ) = fcm.call{value: 0}(
-        //    abi.encodeWithSignature("initiateFullyCollateralisedFixedTakerSwap(uint256,uint160)",
-         //   amount,
-         //    MAX_SQRT_RATIO - 1));
-        emit test(variableRateToken.balanceOf(address(this)));
-        //emit test2(success);
-        //require(variableRateToken.balanceOf(address(this)) == 0, "No Success");
-
-
-        (bool success2, bytes memory termEnd) = marginEngine.call{value:0}(abi.encodeWithSignature("termEndTimestampWad()"));
-        require(success2, "No Success-2");
+        (bool success, bytes memory termEnd) = marginEngine.call{value:0}(abi.encodeWithSignature("termEndTimestampWad()"));
+        require(success, "No Success");
         maturity = termEnd;
     }
 
@@ -219,8 +221,10 @@ contract JointVaultStrategy is Ownable {
     
     // @notice Settle Strategie 
     function settle() public  {
+        require(windowIsClosed(), "Maturity not reached;");
         // Get AUSDC and USDC from Voltz position
         int delta = IFCM(fcm).settleTrader();
+        emit Payout(msg.sender, delta);
         //fcm.call{value: 0}(abi.encodeWithSignature("settleTrader()"));
 
         // Convert USDC to AUSDC
@@ -254,19 +258,16 @@ contract JointVaultStrategy is Ownable {
 
         // Convert different denominations (6 <- 18)
         uint mintAmount = amount;  // * 1e12;
-        emit test(mintAmount);
 
         // Approve AAve to spend the underlying token
         underlyingToken.approve(address(AAVE), amount);
 
         // Calculate deposit rate
         uint256 finalAmount = mintAmount * 1e18 / cRate;
-        emit test(finalAmount);
 
         // Deposit to Aave
         AAVE.deposit(address(underlyingToken), amount, address(this), 0);
         require(variableRateToken.balanceOf(address(this)) > 0, "Aave deposit failed;");
-        emit test(amount);
 
         // Mint jvUSDC
         JVUSDC.adminMint(msg.sender, finalAmount);      
