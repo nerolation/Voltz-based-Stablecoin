@@ -130,10 +130,12 @@ contract JointVaultStrategy is Ownable {
 
 
         // Convert TUSD to ATUSD
-        //uint256 underlyingTokenBalance = underlyingToken.balanceOf(address(this));
+        uint256 underlyingTokenBalance = underlyingToken.balanceOf(address(this));
 
-        //underlyingToken.approve(address(AAVE), underlyingTokenBalance);
-        //AAVE.deposit(address(underlyingToken), underlyingTokenBalance, address(this), 0);
+        if (underlyingTokenBalance > 0) {
+            underlyingToken.approve(address(AAVE), underlyingTokenBalance);
+            AAVE.deposit(address(underlyingToken), underlyingTokenBalance, address(this), 0);
+        }
     }
 
     // TODO: Do not require custodian
@@ -170,10 +172,6 @@ contract JointVaultStrategy is Ownable {
     // @param  Amount of jvTUSD to redeem as TUSD
     // TODO: remove hardcoded decimals
     function withdraw(uint256 amount) public  {
-        require(JVTUSD.allowance(msg.sender, address(this)) >= amount, "Approve contract first;");
-
-        // Pull jvTUSD tokens from user
-        JVTUSD.transferFrom(msg.sender, address(this), amount);
 
         // Burn jvTUSD tokens from this contract
         JVTUSD.adminBurn(msg.sender, amount);
@@ -199,16 +197,18 @@ contract JointVaultStrategy is Ownable {
         return variableRateToken.balanceOf(address(this));      
     }
 
-    function getNow() public view returns (uint now) {
+    function getNow() public view returns (uint) {
         return block.timestamp;
     }
 
     // @notice Fallback that ignores calls from jvTUSD
     // @notice Calls from jvTUSD happen when user deposits
     fallback() external {
-        if (underlyingToken.balanceOf(address(this)) > 0) {
-            AAVE.deposit(address(underlyingToken), underlyingToken.balanceOf(address(this)), address(this), 0);
-        }
+        //uint256 underlyingTokenBalance = underlyingToken.balanceOf(address(this));
+        //if (underlyingTokenBalance > 0) {
+        //    underlyingToken.approve(address(AAVE), underlyingTokenBalance);
+        //    AAVE.deposit(address(underlyingToken), underlyingTokenBalance, address(this), 0);
+        //}
         //if (msg.sender != address(JVTUSD)) {
         //    revert("No known function targeted");
         //} 
