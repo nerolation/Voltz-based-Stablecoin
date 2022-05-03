@@ -3,7 +3,7 @@
 pragma solidity =0.8.9;
 
 import "./IAAVE.sol";
-import "./JointVaultUSDC.sol";
+import "./JointVaultTUSD.sol";
 import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -12,12 +12,11 @@ import "./interfaces/IMarginEngine.sol";
 import "./interfaces/fcms/IFCM.sol";
 import "./core_libraries/Time.sol";
 import "./interfaces/rate_oracles/IRateOracle.sol";
+import "./interfaces/IVAMM.sol";
+
 
 
 contract JointVaultStrategy is Ownable {
-    //
-    // Constants
-    //
 
     uint160 MIN_SQRT_RATIO = 2503036416286949174936592462;
     uint160 MAX_SQRT_RATIO = 2507794810551837817144115957740;
@@ -26,9 +25,9 @@ contract JointVaultStrategy is Ownable {
     // Token contracts
     //
 
-    IERC20 public variableRateToken; // AUSDC
-    IERC20 public underlyingToken; // USDC
-    JointVaultUSDC public JVUSDC; // JVUSDC ERC instantiation
+    IERC20 public variableRateToken; // ATUSD
+    IERC20 public underlyingToken; // TUSD
+    JointVaultTUSD public JVTUSD; // JVTUSD ERC instantiation
 
     //
     // Aave contracts
@@ -39,60 +38,21 @@ contract JointVaultStrategy is Ownable {
     // Voltz contracts
     //
 
-    //
-    // Logic variables
-    //
-
-    // CollectionWindow public collectionWindow;
-    // uint256 public termEnd; // unix timestamp in seconds
-    // uint public cRate; // Conversion rate
-
-    //
-    // Structs
-    //
-/*
-    struct CollectionWindow {
-        uint256 start; // unix timestamp in seconds
-        uint256 end; // unix timestamp in seconds
-    }
-
-    //
-    // Modifiers
-    //
-
-    modifier isInCollectionWindow() {
-        require(collectionWindowSet(), "Collection window not set");
-        require(inCollectionWindow(), "Collection window not open");
-        _;
-    }
-
-    modifier isNotInCollectionWindow() {
-        require(collectionWindowSet(), "Collection window not set");
-        require(!inCollectionWindow(), "Collection window open");
-        _;
-    }
-
-    modifier canExecute() {
-        require(isAfterCollectionWindow(), "Collection round has not finished");
-        _;
-    }
-
-    modifier canSettle() {
-        require(isAfterEndTerm(), "Not past term end");
-        _;
-    }
-*/  
     address fcm;
     address marginEngine;
     address factory;
     address periphery;
-    uint256 public cRate;
     bytes public maturity;
     IRateOracle public rateOracle;
+    IVAMM public vamm;
 
-    mapping(address => mapping(address => uint256)) public balances;
+    uint public endTimestamp;
+
+    mapping(address => uint256) public rates;
+
 
     event Payout(address beneficiary, int256 amount);
+    event SwapResult(int,int,int);
 
     constructor(
         //CollectionWindow memory _collectionWindow
@@ -101,8 +61,8 @@ contract JointVaultStrategy is Ownable {
         variableRateToken = IERC20(0x39914AdBe5fDbC2b9ADeedE8Bcd444b20B039204);
         underlyingToken = IERC20(0x016750AC630F711882812f24Dba6c95b9D35856d);
 
-        // Deploy JVUSDC token
-        JVUSDC = new JointVaultUSDC("Joint Vault USDC", "jvUSDC"); 
+        // Deploy JVTUSD token
+        JVTUSD = new JointVaultTUSD("Joint Vault TUSD", "jvTUSD"); 
 
         // Voltz contracts
         factory = 0x07091fF74E2682514d860Ff9F4315b90525952b0;
@@ -111,77 +71,22 @@ contract JointVaultStrategy is Ownable {
         //periphery = IPeriphery(factory.periphery());
         fcm = 0xEF3195f842d97181b7E72E833D2eE0214dB77365;
         marginEngine = 0x13E30f8B91b5d0d9e075794a987827C21b06d4C1;
-        IRateOracle rateOracle = IRateOracle(IMarginEngine(marginEngine).rateOracle());
+        rateOracle = IRateOracle(IMarginEngine(marginEngine).rateOracle());
+        vamm = IVAMM(IMarginEngine(marginEngine).vamm());
 
         // Aave contracts
         AAVE = IAAVE(0xE0fBa4Fc209b4948668006B2bE61711b7f465bAe);
-
-        // Set initial collection window
-        //collectionWindow = _collectionWindow;
-
-        // initialize conversion rate
-        cRate = 1e18; 
     }
 
-    //
-    // Modifier helpers
-    //
-/*
-    function collectionWindowSet() internal returns (bool) {
-        return collectionWindow.start != 0 && collectionWindow.end != 0;
-    }
 
-    function inCollectionWindow() internal returns (bool) {
-        return block.timestamp >= collectionWindow.start && block.timestamp < collectionWindow.end;
-    }
 
-    function isAfterCollectionWindow() internal returns (bool) {
-        // TODO: Also ensure that it's before the start of the next collection window
-        return block.timestamp > collectionWindow.end;
-    }
-
-    function isAfterEndTerm() internal returns (bool) {
-        return block.timestamp >= termEnd;
-    }
-*/
-    //
-    // Data functions
-    //
-
-    // Returns factor in 5 decimal format to handle sub 1 numbers.
-    // TODO: remove hardcoded decimals
-    function conversionFactor() internal view returns (uint256) {
-        require(JVUSDC.totalSupply() != 0, "JVUSDC totalSupply is zero");
-
-        return (
-            // twelve decimals for aUSDC / jVUSDC decimal different + 18 from ctoken decimals
-            variableRateToken.balanceOf(address(this)) * 1e18 / JVUSDC.totalSupply()
-        );
-    }
- 
-    // @notice Update conversion rate 
-    function updateCRate() internal { // restriction needed
-        cRate = conversionFactor();
-    }
-
-    //
-    // Strategy functions
-    //
-
-    function getUnderlyingTokenOfMarginEngine() public returns(address me){
+    function getUnderlyingTokenOfMarginEngine() public view returns(address me){
         return address(IMarginEngine(marginEngine).underlyingToken());
     }
-    uint public endTimestamp;
+    
     function getEndTimestampWad() public returns(uint endTimestampWad) {
         endTimestamp = IMarginEngine(marginEngine).termEndTimestampWad()/1e18;
         return IMarginEngine(marginEngine).termEndTimestampWad();
-    }
-
-    uint public Rate;
-    address oracle = 0x41dad84A16b92E8fe5410C70Cfa33CfA2cBc1143;
-    function getRate(uint er, uint zw) public returns(uint rate) {
-        Rate = IRateOracle(oracle).getApyFromTo(er,zw);
-        return Rate;
     }
     
 
@@ -203,41 +108,32 @@ contract JointVaultStrategy is Ownable {
         IPeriphery(periphery).mintOrBurn(mobp);
     }
 
-    // @notice Interact with Voltz 
-    function execute(uint amount) public  {
+    function enterFTPosition(uint amount) public  {
         IERC20(variableRateToken).approve(fcm, amount);
-        (int a, int b,,) = IFCM(fcm).initiateFullyCollateralisedFixedTakerSwap(amount, MAX_SQRT_RATIO - 1);
+        // int256 fixedTokenDelta,int256 variableTokenDelta,,int256 fixedTokenDeltaUnbalanced, int256 marginRequirement
+        (int a, int b,,int d) = IFCM(fcm).initiateFullyCollateralisedFixedTakerSwap(amount, MAX_SQRT_RATIO - 1);
         (bool success, bytes memory termEnd) = marginEngine.call{value:0}(abi.encodeWithSignature("termEndTimestampWad()"));
         require(success, "No Success");
         maturity = termEnd;
+        rates[msg.sender] = uint(d*1e18/(b*-1));
+        emit SwapResult(a,b,d);
     }
 
-    // @notice Update window in which 
-    // @param  Amount of USDC to withdraw from AAVE
-    //function updateCollectionWindow() public {
-    //    collectionWindow.start = termEnd;
-    //    collectionWindow.end = termEnd + 86400; // termEnd + 1 day
-    //}
+
     
     // @notice Settle Strategie 
     function settle() public  {
         require(windowIsClosed(), "Maturity not reached;");
-        // Get AUSDC and USDC from Voltz position
+        // Get ATUSD and TUSD from Voltz position
         int delta = IFCM(fcm).settleTrader();
         emit Payout(msg.sender, delta);
-        //fcm.call{value: 0}(abi.encodeWithSignature("settleTrader()"));
 
-        // Convert USDC to AUSDC
+
+        // Convert TUSD to ATUSD
         //uint256 underlyingTokenBalance = underlyingToken.balanceOf(address(this));
 
         //underlyingToken.approve(address(AAVE), underlyingTokenBalance);
         //AAVE.deposit(address(underlyingToken), underlyingTokenBalance, address(this), 0);
-
-        // Update cRate
-        updateCRate();
-
-        // Update the collection window
-        //updateCollectionWindow();
     }
 
     // TODO: Do not require custodian
@@ -249,73 +145,71 @@ contract JointVaultStrategy is Ownable {
     // User functions
     //
     
-    // @notice Initiate deposit to AAVE Lending Pool and receive jvUSDC
-    // @param  Amount of USDC to deposit to AAVE
+    // @notice Initiate deposit to AAVE Lending Pool and receive jvTUSD
+    // @param  Amount of TUSD to deposit to AAVE
     // TODO: remove hardcoded decimals
     function deposit(uint256 amount) public  {
         require(underlyingToken.allowance(msg.sender, address(this)) >= amount, "Approve contract first;");
         underlyingToken.transferFrom(msg.sender, address(this), amount);
 
-        // Convert different denominations (6 <- 18)
-        uint mintAmount = amount;  // * 1e12;
-
         // Approve AAve to spend the underlying token
         underlyingToken.approve(address(AAVE), amount);
-
-        // Calculate deposit rate
-        uint256 finalAmount = mintAmount * 1e18 / cRate;
 
         // Deposit to Aave
         AAVE.deposit(address(underlyingToken), amount, address(this), 0);
         require(variableRateToken.balanceOf(address(this)) > 0, "Aave deposit failed;");
 
-        // Mint jvUSDC
-        JVUSDC.adminMint(msg.sender, finalAmount);      
+        // Enter Voltz FT position
+        enterFTPosition(amount);
+
+        // Mint jvTUSD
+        JVTUSD.adminMint(msg.sender, amount);      
     }
 
-    // @notice Initiate withdraw from AAVE Lending Pool and pay back jvUSDC
-    // @param  Amount of yvUSDC to redeem as USDC
+    // @notice Initiate withdraw from AAVE Lending Pool and pay back jvTUSD
+    // @param  Amount of jvTUSD to redeem as TUSD
     // TODO: remove hardcoded decimals
     function withdraw(uint256 amount) public  {
-        // Convert different denominations (6 -> 18)
-        uint256 withdrawAmount = amount; // / 1e12;
-        uint256 finalAmount = cRate * withdrawAmount / 1e18;
+        require(JVTUSD.allowance(msg.sender, address(this)) >= amount, "Approve contract first;");
 
-        // Pull jvUSDC tokens from user
-        //JVUSDC.transferFrom(msg.sender, address(this), amount);
+        // Pull jvTUSD tokens from user
+        JVTUSD.transferFrom(msg.sender, address(this), amount);
 
-        // Burn jvUSDC tokens from this contract
-        JVUSDC.adminBurn(msg.sender, amount);
+        // Burn jvTUSD tokens from this contract
+        JVTUSD.adminBurn(msg.sender, amount);
+
+         // Calculate deposit rate
+        uint256 finalAmount = amount * rates[msg.sender] / 1e18;
 
         // Update payout amount
         uint256 wa = AAVE.withdraw(address(underlyingToken), finalAmount, address(this));
         require(wa >= finalAmount, "Not enough collateral;");
 
-        // Transfer USDC back to the user
+        // Transfer TUSD back to the user
         underlyingToken.transfer(msg.sender, finalAmount);
     }
 
-    // @notice Receive this contracts USDC balance
-    function contractBalanceUsdc() public view returns (uint256){
+    // @notice Receive this contracts TUSD balance
+    function contractBalanceTUSD() public view returns (uint256){
         return underlyingToken.balanceOf(address(this));      
     }
 
-    // @notice Receive this contracts aUSDC balance
-    function contractBalanceAUsdc() public view returns (uint256){
+    // @notice Receive this contracts aTUSD balance
+    function contractBalanceATUSD() public view returns (uint256){
         return variableRateToken.balanceOf(address(this));      
     }
 
-    function getNow() public view returns (uint) {
+    function getNow() public view returns (uint now) {
         return block.timestamp;
     }
 
-    // @notice Fallback that ignores calls from jvUSDC
-    // @notice Calls from jvUSDC happen when user deposits
+    // @notice Fallback that ignores calls from jvTUSD
+    // @notice Calls from jvTUSD happen when user deposits
     fallback() external {
         if (underlyingToken.balanceOf(address(this)) > 0) {
             AAVE.deposit(address(underlyingToken), underlyingToken.balanceOf(address(this)), address(this), 0);
         }
-        //if (msg.sender != address(JVUSDC)) {
+        //if (msg.sender != address(JVTUSD)) {
         //    revert("No known function targeted");
         //} 
     }
