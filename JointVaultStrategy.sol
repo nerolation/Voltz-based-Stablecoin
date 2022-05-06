@@ -21,38 +21,27 @@ contract JointVaultStrategy is Ownable {
     uint160 MIN_SQRT_RATIO = 2503036416286949174936592462;
     uint160 MAX_SQRT_RATIO = 2507794810551837817144115957740;
 
-    //
-    // Token contracts
-    //
-
-    IERC20 public variableRateToken; // ATUSD
-    IERC20 public underlyingToken; // TUSD
-    JointVaultTUSD public JVTUSD; // JVTUSD ERC instantiation
-
-    //
-    // Aave contracts
-    //
-    IAAVE AAVE;
-
-    //
-    // Voltz contracts
-    //
-
     address fcm;
     address marginEngine;
     address factory;
     address periphery;
     bytes public maturity;
+    uint public endTimestamp;
+
+    IERC20 public variableRateToken; // ATUSD
+    IERC20 public underlyingToken; // TUSD
+    JointVaultTUSD public JVTUSD; // JVTUSD ERC instantiation
+    IAAVE AAVE;
     IRateOracle public rateOracle;
     IVAMM public vamm;
 
-    uint public endTimestamp;
+    event Payout(address beneficiary, 
+                 int256 amount);
 
-    mapping(address => uint256) public rates;
-
-
-    event Payout(address beneficiary, int256 amount);
-    event SwapResult(int,int,int);
+    event SwapResult(int fixedTokenDelta, 
+                     int variableTokenDelta, 
+                     int fixedTokenDeltaUnbalanced, 
+                     uint rate);
 
     constructor(
         //CollectionWindow memory _collectionWindow
@@ -108,15 +97,16 @@ contract JointVaultStrategy is Ownable {
         IPeriphery(periphery).mintOrBurn(mobp);
     }
 
-    function enterFTPosition(uint amount) public  {
+    function enterFTPosition(uint amount) internal returns(uint rate)  {
         IERC20(variableRateToken).approve(fcm, amount);
-        // int256 fixedTokenDelta,int256 variableTokenDelta,,int256 fixedTokenDeltaUnbalanced, int256 marginRequirement
+        // int256 fixedTokenDelta,int256 variableTokenDelta, ,int256 fixedTokenDeltaUnbalanced, 
         (int a, int b,,int d) = IFCM(fcm).initiateFullyCollateralisedFixedTakerSwap(amount, MAX_SQRT_RATIO - 1);
         (bool success, bytes memory termEnd) = marginEngine.call{value:0}(abi.encodeWithSignature("termEndTimestampWad()"));
         require(success, "No Success");
         maturity = termEnd;
-        rates[msg.sender] = uint(d*1e18/(b*-1));
-        emit SwapResult(a,b,d);
+        rate = uint(d*1e9/(b*-1));
+        emit SwapResult(a,b,d,rate);
+        return rate;
     }
 
 
@@ -126,7 +116,7 @@ contract JointVaultStrategy is Ownable {
         require(windowIsClosed(), "Maturity not reached;");
         // Get ATUSD and TUSD from Voltz position
         int delta = IFCM(fcm).settleTrader();
-        emit Payout(msg.sender, delta);
+        emit Payout(address(this), delta);
 
 
         // Convert TUSD to ATUSD
@@ -158,14 +148,18 @@ contract JointVaultStrategy is Ownable {
         underlyingToken.approve(address(AAVE), amount);
 
         // Deposit to Aave
+        require(underlyingToken.balanceOf(address(this)) >= amount, "Not enough TUSD;");
         AAVE.deposit(address(underlyingToken), amount, address(this), 0);
         require(variableRateToken.balanceOf(address(this)) > 0, "Aave deposit failed;");
 
         // Enter Voltz FT position
-        enterFTPosition(amount);
+        uint rate = enterFTPosition(amount);
+
+         // Calculate deposit rate
+        uint256 mintAmount = amount + amount * rate / 1e13;
 
         // Mint jvTUSD
-        JVTUSD.adminMint(msg.sender, amount);      
+        JVTUSD.adminMint(msg.sender, mintAmount);      
     }
 
     // @notice Initiate withdraw from AAVE Lending Pool and pay back jvTUSD
@@ -176,15 +170,12 @@ contract JointVaultStrategy is Ownable {
         // Burn jvTUSD tokens from this contract
         JVTUSD.adminBurn(msg.sender, amount);
 
-         // Calculate deposit rate
-        uint256 finalAmount = amount * rates[msg.sender] / 1e18;
-
         // Update payout amount
-        uint256 wa = AAVE.withdraw(address(underlyingToken), finalAmount, address(this));
-        require(wa >= finalAmount, "Not enough collateral;");
+        uint256 wa = AAVE.withdraw(address(underlyingToken), amount, address(this));
+        require(wa >= amount, "Not enough collateral;");
 
         // Transfer TUSD back to the user
-        underlyingToken.transfer(msg.sender, finalAmount);
+        underlyingToken.transfer(msg.sender, amount);
     }
 
     // @notice Receive this contracts TUSD balance
