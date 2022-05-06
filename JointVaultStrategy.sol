@@ -53,11 +53,6 @@ contract JointVaultStrategy is Ownable {
     constructor(
         //CollectionWindow memory _collectionWindow
     ) {
-        // Token contracts
-        variableRateToken = IERC20(0x39914AdBe5fDbC2b9ADeedE8Bcd444b20B039204);
-        //underlyingToken = IERC20(0x016750AC630F711882812f24Dba6c95b9D35856d);
-        underlyingToken = IERC20(address(IMarginEngine(marginEngine).underlyingToken()));
-
         // Deploy JVTUSD token
         JVTUSD = new JointVaultTUSD("Joint Vault TUSD", "jvTUSD"); 
 
@@ -74,6 +69,11 @@ contract JointVaultStrategy is Ownable {
         rateOracle = IRateOracle(IMarginEngine(marginEngine).rateOracle());
         vamm = IVAMM(IMarginEngine(marginEngine).vamm());
 
+        // Token contracts
+        variableRateToken = IERC20(0x39914AdBe5fDbC2b9ADeedE8Bcd444b20B039204);
+        //underlyingToken = IERC20(0x016750AC630F711882812f24Dba6c95b9D35856d);
+        underlyingToken = IERC20(address(IMarginEngine(marginEngine).underlyingToken()));
+
         // Aave contracts
         //AAVE = IAAVE(0xE0fBa4Fc209b4948668006B2bE61711b7f465bAe);
         AAVE = IAAVE(address(IAaveFCM(fcm).aaveLendingPool()));
@@ -85,13 +85,10 @@ contract JointVaultStrategy is Ownable {
         return address(IMarginEngine(marginEngine).underlyingToken());
     }
     
-    function getEndTimestampWad() public returns(uint endTimestampWad) {
-        endTimestamp = IMarginEngine(marginEngine).termEndTimestampWad()/1e18;
-        return IMarginEngine(marginEngine).termEndTimestampWad();
-    }
+    
     
 
-    function windowIsClosed() public returns(bool closed) {
+    function windowIsClosed() public view returns(bool closed) {
         return Time.isCloseToMaturityOrBeyondMaturity(getEndTimestampWad());
     }
 
@@ -147,20 +144,26 @@ contract JointVaultStrategy is Ownable {
     //
     // User functions
     //
+
+
+
+     
+
+    
+
     
     // @notice Initiate deposit to AAVE Lending Pool and receive jvTUSD
     // @param  Amount of TUSD to deposit to AAVE
-    // TODO: remove hardcoded decimals
+    // TODO: fee = notional * timeInYears * governanceparameter
     event Test(uint);
     function deposit(uint256 amount) public  {
+        uint maxFee;
         require(underlyingToken.allowance(msg.sender, address(this)) >= amount, "Approve contract first;");
         underlyingToken.transferFrom(msg.sender, address(this), amount);
 
-        if (amount > MAX_FEE) {
-            amount = amount - MAX_FEE;
-        }
+        maxFee = getVoltzFee(amount);
         
-
+        amount = amount - maxFee;
 
         // Approve AAve to spend the underlying token
         underlyingToken.approve(address(AAVE), amount);
@@ -174,6 +177,7 @@ contract JointVaultStrategy is Ownable {
 
         // Enter Voltz FT position
         (uint rate, uint secondsWeiToMaturity, uint fee) = enterFTPosition(amount);
+        require(fee <= maxFee, "Fees for swap too high");
 
         uint secondsWeiPerYear = 86400 * 365 * 1e18;
 
@@ -185,7 +189,7 @@ contract JointVaultStrategy is Ownable {
         // Mint jvTUSD
         JVTUSD.adminMint(msg.sender, amount + interests); 
 
-        uint payback = amount + MAX_FEE - fee;
+        uint payback = amount + maxFee - fee;
         underlyingToken.transfer(msg.sender, payback);     
     }
 
@@ -215,8 +219,25 @@ contract JointVaultStrategy is Ownable {
         return variableRateToken.balanceOf(address(this));      
     }
 
-    function getNow() public view returns (uint) {
+    function timeToMaturityInYearsWad() public view returns (uint) {
+        uint timeToMaturity = getEndTimestampWad() - (block.timestamp * 1e18);
+        return timeToMaturity / (86400 * 365);
+    }
+
+    function getEndTimestampWad() public view returns(uint endTimestampWad) {
+        return IMarginEngine(marginEngine).termEndTimestampWad();
+    }
+
+    function _now() public view returns (uint){
         return block.timestamp;
+    }
+
+    function getVoltzFee(uint amount) public view returns (uint){
+        return amount * timeToMaturityInYearsWad() * vammFees() / 1e36;
+    }
+
+    function vammFees() public view returns (uint){
+        return vamm.feeWad();
     }
 
     // @notice Fallback that ignores calls from jvTUSD
