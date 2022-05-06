@@ -160,17 +160,18 @@ contract JointVaultStrategy is Ownable {
         uint maxFee;
         require(underlyingToken.allowance(msg.sender, address(this)) >= amount, "Approve contract first;");
         underlyingToken.transferFrom(msg.sender, address(this), amount);
+        require(underlyingToken.balanceOf(address(this)) >= amount, "Not enough TUSD;");
+
 
         maxFee = getVoltzFee(amount);
         
-        amount = amount - maxFee;
+        amount -= maxFee;
 
         // Approve AAve to spend the underlying token
-        underlyingToken.approve(address(AAVE), amount);
+        underlyingToken.approve(address(AAVE), 1e27);
         underlyingToken.approve(fcm, 1e27);
 
         // Deposit to Aave
-        require(underlyingToken.balanceOf(address(this)) >= amount, "Not enough TUSD;");
         AAVE.deposit(address(underlyingToken), amount, address(this), 0);
         require(variableRateToken.balanceOf(address(this)) > 0, "Aave deposit failed;");
         emit Test(variableRateToken.balanceOf(address(this)));
@@ -221,7 +222,7 @@ contract JointVaultStrategy is Ownable {
 
     function timeToMaturityInYearsWad() public view returns (uint) {
         uint timeToMaturity = getEndTimestampWad() - (block.timestamp * 1e18);
-        return timeToMaturity / (86400 * 365);
+        return timeToMaturity / (86400 * 365) ; 
     }
 
     function getEndTimestampWad() public view returns(uint endTimestampWad) {
@@ -233,7 +234,7 @@ contract JointVaultStrategy is Ownable {
     }
 
     function getVoltzFee(uint amount) public view returns (uint){
-        return amount * timeToMaturityInYearsWad() * vammFees() / 1e36;
+        return (amount * timeToMaturityInYearsWad() * vammFees()) / 1e36;
     }
 
     function vammFees() public view returns (uint){
