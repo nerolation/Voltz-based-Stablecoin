@@ -4,6 +4,7 @@ pragma solidity =0.8.9;
 
 import "./IAAVE.sol";
 import "./JointVaultTUSD.sol";
+import "./interfaces/fcms/IAaveFCM.sol";
 import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -20,18 +21,20 @@ contract JointVaultStrategy is Ownable {
 
     uint160 MIN_SQRT_RATIO = 2503036416286949174936592462;
     uint160 MAX_SQRT_RATIO = 2507794810551837817144115957740;
+    uint256 public constant MAX_FEE = 20000000000000000;
 
     address fcm;
     address marginEngine;
     address factory;
     address periphery;
-    bytes public maturity;
+    uint public maturity;
     uint public endTimestamp;
 
     IERC20 public variableRateToken; // ATUSD
     IERC20 public underlyingToken; // TUSD
     JointVaultTUSD public JVTUSD; // JVTUSD ERC instantiation
-    IAAVE AAVE;
+    IAAVE public AAVE;
+    address public AAVE_LendingPool;
     IRateOracle public rateOracle;
     IVAMM public vamm;
 
@@ -40,31 +43,40 @@ contract JointVaultStrategy is Ownable {
 
     event SwapResult(int fixedTokenDelta, 
                      int variableTokenDelta, 
+                     uint fee,
                      int fixedTokenDeltaUnbalanced, 
-                     uint rate);
+                     uint rate,
+                     uint secondsWeiToMaturity);
+
+     event Interests(uint fixedTokenDelta);
 
     constructor(
         //CollectionWindow memory _collectionWindow
     ) {
         // Token contracts
         variableRateToken = IERC20(0x39914AdBe5fDbC2b9ADeedE8Bcd444b20B039204);
-        underlyingToken = IERC20(0x016750AC630F711882812f24Dba6c95b9D35856d);
+        //underlyingToken = IERC20(0x016750AC630F711882812f24Dba6c95b9D35856d);
+        underlyingToken = IERC20(address(IMarginEngine(marginEngine).underlyingToken()));
 
         // Deploy JVTUSD token
         JVTUSD = new JointVaultTUSD("Joint Vault TUSD", "jvTUSD"); 
 
         // Voltz contracts
+        // Topic for new pools: 0xe134804702afa0f02bd7f0687d4c2f662a1790b4904d1c2cd6f41fcffbfc05c3
         factory = 0x07091fF74E2682514d860Ff9F4315b90525952b0;
         periphery = 0xcf0144e092f2B80B11aD72CF87C71d1090F97746;
 
         //periphery = IPeriphery(factory.periphery());
         fcm = 0xEF3195f842d97181b7E72E833D2eE0214dB77365;
         marginEngine = 0x13E30f8B91b5d0d9e075794a987827C21b06d4C1;
+
+        
         rateOracle = IRateOracle(IMarginEngine(marginEngine).rateOracle());
         vamm = IVAMM(IMarginEngine(marginEngine).vamm());
 
         // Aave contracts
-        AAVE = IAAVE(0xE0fBa4Fc209b4948668006B2bE61711b7f465bAe);
+        //AAVE = IAAVE(0xE0fBa4Fc209b4948668006B2bE61711b7f465bAe);
+        AAVE = IAAVE(address(IAaveFCM(fcm).aaveLendingPool()));
     }
 
 
@@ -97,16 +109,15 @@ contract JointVaultStrategy is Ownable {
         IPeriphery(periphery).mintOrBurn(mobp);
     }
 
-    function enterFTPosition(uint amount) internal returns(uint rate)  {
+    function enterFTPosition(uint amount) internal returns(uint rate, uint secondsWeiToMaturity, uint fee)  {
         IERC20(variableRateToken).approve(fcm, amount);
         // int256 fixedTokenDelta,int256 variableTokenDelta, ,int256 fixedTokenDeltaUnbalanced, 
-        (int a, int b,,int d) = IFCM(fcm).initiateFullyCollateralisedFixedTakerSwap(amount, MAX_SQRT_RATIO - 1);
-        (bool success, bytes memory termEnd) = marginEngine.call{value:0}(abi.encodeWithSignature("termEndTimestampWad()"));
-        require(success, "No Success");
-        maturity = termEnd;
-        rate = uint(d*1e9/(b*-1));
-        emit SwapResult(a,b,d,rate);
-        return rate;
+        (int _a, int _b, uint _fee, int _d) = IFCM(fcm).initiateFullyCollateralisedFixedTakerSwap(amount, MAX_SQRT_RATIO - 1);
+        maturity = IMarginEngine(marginEngine).termEndTimestampWad();
+        secondsWeiToMaturity = maturity - block.timestamp * 1e18;
+        rate = uint(_d*1e9/(_b*-1));
+        emit SwapResult(_a,_b,_fee,_d,rate,secondsWeiToMaturity);
+        return (rate, secondsWeiToMaturity, _fee);
     }
 
 
@@ -140,26 +151,42 @@ contract JointVaultStrategy is Ownable {
     // @notice Initiate deposit to AAVE Lending Pool and receive jvTUSD
     // @param  Amount of TUSD to deposit to AAVE
     // TODO: remove hardcoded decimals
+    event Test(uint);
     function deposit(uint256 amount) public  {
         require(underlyingToken.allowance(msg.sender, address(this)) >= amount, "Approve contract first;");
         underlyingToken.transferFrom(msg.sender, address(this), amount);
 
+        if (amount > MAX_FEE) {
+            amount = amount - MAX_FEE;
+        }
+        
+
+
         // Approve AAve to spend the underlying token
         underlyingToken.approve(address(AAVE), amount);
+        underlyingToken.approve(fcm, 1e27);
 
         // Deposit to Aave
         require(underlyingToken.balanceOf(address(this)) >= amount, "Not enough TUSD;");
         AAVE.deposit(address(underlyingToken), amount, address(this), 0);
         require(variableRateToken.balanceOf(address(this)) > 0, "Aave deposit failed;");
+        emit Test(variableRateToken.balanceOf(address(this)));
 
         // Enter Voltz FT position
-        uint rate = enterFTPosition(amount);
+        (uint rate, uint secondsWeiToMaturity, uint fee) = enterFTPosition(amount);
+
+        uint secondsWeiPerYear = 86400 * 365 * 1e18;
+
+        uint ratePerSecondToMaturity = rate * secondsWeiToMaturity / secondsWeiPerYear;
 
          // Calculate deposit rate
-        uint256 mintAmount = amount + amount * rate / 1e13;
+        uint256 interests = amount * ratePerSecondToMaturity / 1e11;
 
         // Mint jvTUSD
-        JVTUSD.adminMint(msg.sender, mintAmount);      
+        JVTUSD.adminMint(msg.sender, amount + interests); 
+
+        uint payback = amount + MAX_FEE - fee;
+        underlyingToken.transfer(msg.sender, payback);     
     }
 
     // @notice Initiate withdraw from AAVE Lending Pool and pay back jvTUSD
