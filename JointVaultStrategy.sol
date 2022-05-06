@@ -14,11 +14,12 @@ import "./interfaces/fcms/IFCM.sol";
 import "./core_libraries/Time.sol";
 import "./interfaces/rate_oracles/IRateOracle.sol";
 import "./interfaces/IVAMM.sol";
-
-
+import "prb-math/contracts/PRBMathSD59x18.sol";
+import "prb-math/contracts/PRBMathUD60x18.sol";
 
 contract JointVaultStrategy is Ownable {
-
+    using PRBMathSD59x18 for int256;
+    using PRBMathUD60x18 for uint256;
     uint160 MIN_SQRT_RATIO = 2503036416286949174936592462;
     uint160 MAX_SQRT_RATIO = 2507794810551837817144115957740;
     uint256 public constant MAX_FEE = 20000000000000000;
@@ -222,7 +223,7 @@ contract JointVaultStrategy is Ownable {
 
     function timeToMaturityInYearsWad() public view returns (uint) {
         uint timeToMaturity = getEndTimestampWad() - (block.timestamp * 1e18);
-        return timeToMaturity / (86400 * 365) ; 
+        return timeToMaturity.div(31536000e18); 
     }
 
     function getEndTimestampWad() public view returns(uint endTimestampWad) {
