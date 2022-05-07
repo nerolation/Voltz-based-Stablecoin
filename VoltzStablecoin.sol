@@ -17,7 +17,7 @@ import "./interfaces/IVAMM.sol";
 import "prb-math/contracts/PRBMathSD59x18.sol";
 import "prb-math/contracts/PRBMathUD60x18.sol";
 
-contract JointVaultStrategy is Ownable {
+contract VoltzStablecoin is Ownable {
     using PRBMathSD59x18 for int256;
     using PRBMathUD60x18 for uint256;
     uint160 MIN_SQRT_RATIO = 2503036416286949174936592462;
