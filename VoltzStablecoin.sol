@@ -23,6 +23,7 @@ contract VoltzStablecoin is Ownable {
     uint160 MIN_SQRT_RATIO = 2503036416286949174936592462;
     uint160 MAX_SQRT_RATIO = 2507794810551837817144115957740;
     uint256 public constant MAX_FEE = 20000000000000000;
+    uint256 SENCONDS_PER_YEAR = 31536000e18;
 
     address fcm;
     address marginEngine;
@@ -59,12 +60,12 @@ contract VoltzStablecoin is Ownable {
 
         // Voltz contracts
         // Topic for new pools: 0xe134804702afa0f02bd7f0687d4c2f662a1790b4904d1c2cd6f41fcffbfc05c3
-        factory = 0x07091fF74E2682514d860Ff9F4315b90525952b0;
+        factory = 0x71b5020bF90327F2241Cc7D66B60C72CEf9cC39b;
         periphery = 0xcf0144e092f2B80B11aD72CF87C71d1090F97746;
 
         //periphery = IPeriphery(factory.periphery());
-        fcm = 0xEF3195f842d97181b7E72E833D2eE0214dB77365;
-        marginEngine = 0x13E30f8B91b5d0d9e075794a987827C21b06d4C1;
+        fcm = 0x4Cc36Eb58019bc679997035A161a4F1165e97Ef1;
+        marginEngine = 0x15907812Fc62e953fef8441D7594031798E66cCD;
 
         
         rateOracle = IRateOracle(IMarginEngine(marginEngine).rateOracle());
@@ -112,7 +113,7 @@ contract VoltzStablecoin is Ownable {
         // int256 fixedTokenDelta,int256 variableTokenDelta, ,int256 fixedTokenDeltaUnbalanced, 
         (int _a, int _b, uint _fee, int _d) = IFCM(fcm).initiateFullyCollateralisedFixedTakerSwap(amount, MAX_SQRT_RATIO - 1);
         maturity = IMarginEngine(marginEngine).termEndTimestampWad();
-        secondsWeiToMaturity = maturity - block.timestamp * 1e18;
+        secondsWeiToMaturity = maturity - (block.timestamp*1e18);
         rate = uint(_d*1e9/(_b*-1));
         emit SwapResult(_a,_b,_fee,_d,rate,secondsWeiToMaturity);
         return (rate, secondsWeiToMaturity, _fee);
@@ -181,17 +182,18 @@ contract VoltzStablecoin is Ownable {
         (uint rate, uint secondsWeiToMaturity, uint fee) = enterFTPosition(amount);
         require(fee <= maxFee, "Fees for swap too high");
 
-        uint secondsWeiPerYear = 86400 * 365 * 1e18;
+        uint ratePerSecondToMaturity = (rate * secondsWeiToMaturity) / SENCONDS_PER_YEAR;
+        emit Test(amount);
+        emit Test(ratePerSecondToMaturity);
 
-        uint ratePerSecondToMaturity = rate * secondsWeiToMaturity / secondsWeiPerYear;
 
          // Calculate deposit rate
-        uint256 interests = amount * ratePerSecondToMaturity / 1e11;
+        uint256 interests = (amount * ratePerSecondToMaturity) / 1e11;
 
         // Mint jvTUSD
         JVTUSD.adminMint(msg.sender, amount + interests); 
 
-        uint payback = amount + maxFee - fee;
+        uint payback = maxFee - fee;
         underlyingToken.transfer(msg.sender, payback);     
     }
 
@@ -223,7 +225,7 @@ contract VoltzStablecoin is Ownable {
 
     function timeToMaturityInYearsWad() public view returns (uint) {
         uint timeToMaturity = getEndTimestampWad() - (block.timestamp * 1e18);
-        return timeToMaturity.div(31536000e18); 
+        return timeToMaturity.div(SENCONDS_PER_YEAR); 
     }
 
     function getEndTimestampWad() public view returns(uint endTimestampWad) {
