@@ -138,14 +138,11 @@ contract VoltzStablecoin is Ownable {
         }
     }
 
-    // TODO: Do not require custodian
     function setMarginEngine(address _marginEngine) public onlyOwner {
         marginEngine = _marginEngine;
     }
 
-    //
-    // User functions
-    //
+
 
 
 
