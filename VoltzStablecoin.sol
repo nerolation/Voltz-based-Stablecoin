@@ -3,7 +3,7 @@
 pragma solidity =0.8.9;
 
 import "./IAAVE.sol";
-import "./JointVaultTUSD.sol";
+import "./JointVoltzTUSD.sol";
 import "./interfaces/fcms/IAaveFCM.sol";
 import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -66,7 +66,6 @@ contract VoltzStablecoin is Ownable {
         //periphery = IPeriphery(factory.periphery());
         fcm = 0x4Cc36Eb58019bc679997035A161a4F1165e97Ef1;
         marginEngine = 0x15907812Fc62e953fef8441D7594031798E66cCD;
-
         
         rateOracle = IRateOracle(IMarginEngine(marginEngine).rateOracle());
         vamm = IVAMM(IMarginEngine(marginEngine).vamm());
@@ -82,12 +81,9 @@ contract VoltzStablecoin is Ownable {
     }
 
 
-
     function getUnderlyingTokenOfMarginEngine() public view returns(address me){
         return address(IMarginEngine(marginEngine).underlyingToken());
     }
-    
-    
     
 
     function windowIsClosed() public view returns(bool closed) {
@@ -119,15 +115,12 @@ contract VoltzStablecoin is Ownable {
         return (rate, secondsWeiToMaturity, _fee);
     }
 
-
-    
-    // @notice Settle Strategie 
+    // When maturity is reached - settle contract
     function settle() public  {
         require(windowIsClosed(), "Maturity not reached;");
         // Get ATUSD and TUSD from Voltz position
         int delta = IFCM(fcm).settleTrader();
         emit Payout(address(this), delta);
-
 
         // Convert TUSD to ATUSD
         uint256 underlyingTokenBalance = underlyingToken.balanceOf(address(this));
@@ -142,26 +135,16 @@ contract VoltzStablecoin is Ownable {
         marginEngine = _marginEngine;
     }
 
-
-
-
-
-     
-
-    
-
     
     // @notice Initiate deposit to AAVE Lending Pool and receive jvTUSD
     // @param  Amount of TUSD to deposit to AAVE
-    // TODO: fee = notional * timeInYears * governanceparameter
-    event Test(uint);
     function deposit(uint256 amount) public  {
         uint maxFee;
         require(underlyingToken.allowance(msg.sender, address(this)) >= amount, "Approve contract first;");
         underlyingToken.transferFrom(msg.sender, address(this), amount);
         require(underlyingToken.balanceOf(address(this)) >= amount, "Not enough TUSD;");
 
-
+        // Calculate the approximate fee
         maxFee = getVoltzFee(amount);
         
         amount -= maxFee;
@@ -173,16 +156,12 @@ contract VoltzStablecoin is Ownable {
         // Deposit to Aave
         AAVE.deposit(address(underlyingToken), amount, address(this), 0);
         require(variableRateToken.balanceOf(address(this)) > 0, "Aave deposit failed;");
-        emit Test(variableRateToken.balanceOf(address(this)));
 
         // Enter Voltz FT position
         (uint rate, uint secondsWeiToMaturity, uint fee) = enterFTPosition(amount);
         require(fee <= maxFee, "Fees for swap too high");
 
         uint ratePerSecondToMaturity = (rate * secondsWeiToMaturity) / SENCONDS_PER_YEAR;
-        emit Test(amount);
-        emit Test(ratePerSecondToMaturity);
-
 
          // Calculate deposit rate
         uint256 interests = (amount * ratePerSecondToMaturity) / 1e11;
@@ -190,13 +169,13 @@ contract VoltzStablecoin is Ownable {
         // Mint jvTUSD
         JVTUSD.adminMint(msg.sender, amount + interests); 
 
+        // Return not needed fee to user
         uint payback = maxFee - fee;
         underlyingToken.transfer(msg.sender, payback);     
     }
 
     // @notice Initiate withdraw from AAVE Lending Pool and pay back jvTUSD
     // @param  Amount of jvTUSD to redeem as TUSD
-    // TODO: remove hardcoded decimals
     function withdraw(uint256 amount) public  {
 
         // Burn jvTUSD tokens from this contract
@@ -204,7 +183,7 @@ contract VoltzStablecoin is Ownable {
 
         // Update payout amount
         uint256 wa = AAVE.withdraw(address(underlyingToken), amount, address(this));
-        require(wa >= amount, "Not enough collateral;");
+        require(wa >= amount, "Not enough collateral");
 
         // Transfer TUSD back to the user
         underlyingToken.transfer(msg.sender, amount);
@@ -241,16 +220,5 @@ contract VoltzStablecoin is Ownable {
         return vamm.feeWad();
     }
 
-    // @notice Fallback that ignores calls from jvTUSD
-    // @notice Calls from jvTUSD happen when user deposits
-    fallback() external {
-        //uint256 underlyingTokenBalance = underlyingToken.balanceOf(address(this));
-        //if (underlyingTokenBalance > 0) {
-        //    underlyingToken.approve(address(AAVE), underlyingTokenBalance);
-        //    AAVE.deposit(address(underlyingToken), underlyingTokenBalance, address(this), 0);
-        //}
-        //if (msg.sender != address(JVTUSD)) {
-        //    revert("No known function targeted");
-        //} 
-    }
+    fallback() external {}
 }
