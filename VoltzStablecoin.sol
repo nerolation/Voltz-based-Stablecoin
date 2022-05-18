@@ -3,7 +3,7 @@
 pragma solidity =0.8.9;
 
 import "./IAAVE.sol";
-import "./jvTUSD.sol";
+import "./stakedTUSD.sol";
 import "./interfaces/fcms/IAaveFCM.sol";
 import "@openzeppelin/contracts/interfaces/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -34,7 +34,7 @@ contract VoltzStablecoin is Ownable {
 
     IERC20 public variableRateToken; // ATUSD
     IERC20 public underlyingToken; // TUSD
-    JointVaultTUSD public JVTUSD; // JVTUSD 
+    stakedTUSD public stTUSD; // staked TUSD 
     IAAVE public AAVE;
     IRateOracle public rateOracle;
     IVAMM public vamm;
@@ -54,8 +54,8 @@ contract VoltzStablecoin is Ownable {
     constructor(
 
     ) {
-        // Deploy JVTUSD token
-        JVTUSD = new JointVaultTUSD("Joint Vault TUSD", "jvTUSD"); 
+        // Deploy stTUSD token
+        stTUSD = new stakedTUSD("Staked TUSD", "stTUSD"); 
 
         // Voltz contracts
         // Topic for new pools: 0xe134804702afa0f02bd7f0687d4c2f662a1790b4904d1c2cd6f41fcffbfc05c3
@@ -79,8 +79,7 @@ contract VoltzStablecoin is Ownable {
         AAVE = IAAVE(address(IAaveFCM(fcm).aaveLendingPool()));
     }
     
-    // @notice Initiate deposit to AAVE Lending Pool and receive jvTUSD
-    // @param  Amount of TUSD to deposit to AAVE
+
     function deposit(uint256 amount) public  {
         require(underlyingToken.allowance(msg.sender, address(this)) >= amount, "Approve contract first");
         underlyingToken.transferFrom(msg.sender, address(this), amount);
@@ -109,8 +108,8 @@ contract VoltzStablecoin is Ownable {
          // @ notice Divided by 1e11 because *1e9 earlier
         uint256 interests = (amount * ratePerSecondToMaturity) / 1e11;
 
-        // Mint jvTUSD
-        JVTUSD.adminMint(msg.sender, amount + interests); 
+        // Mint stTUSD
+        stTUSD.adminMint(msg.sender, amount + interests); 
 
         // Return not needed fee to user
         uint payback = maxFee - fee;
@@ -149,12 +148,12 @@ contract VoltzStablecoin is Ownable {
     }
 
 
-    // @notice Initiate withdraw from AAVE Lending Pool and pay back jvTUSD
-    // @param  Amount of jvTUSD to redeem as TUSD
+    // @notice Initiate withdraw from AAVE Lending Pool and pay back stTUSD
+    // @param  Amount of stTUSD to redeem as TUSD
     function withdraw(uint256 amount) public  {
 
-        // Burn jvTUSD tokens from this contract
-        JVTUSD.adminBurn(msg.sender, amount);
+        // Burn stTUSD tokens from this contract
+        stTUSD.adminBurn(msg.sender, amount);
 
         // Update payout amount
         uint256 wa = AAVE.withdraw(address(underlyingToken), amount, address(this));
@@ -174,9 +173,9 @@ contract VoltzStablecoin is Ownable {
         return variableRateToken.balanceOf(address(this));      
     }
 
-    // @notice Receive this contracts jvTUSD balance
-    function contractBalanceJVTUSD() public view returns (uint256){
-        return JVTUSD.balanceOf(address(this));      
+    // @notice Receive this contracts stTUSD balance
+    function contractBalanceStTUSD() public view returns (uint256){
+        return stTUSD.balanceOf(address(this));      
     }
 
     function timeToMaturityInYearsWad() internal view returns (uint) {
