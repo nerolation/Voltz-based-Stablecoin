@@ -1,2 +1,2 @@
-# Voltz-Extension-RemixIDE-Env
-Import the Voltz source code to remix and
+# Voltz-based Stablecoin
+(c) by Join(T) Research
